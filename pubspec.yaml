@@ -1,5 +1,5 @@
-name: basic_test_app
-description: A basic Flutter app for sideloading test.
+name: test2
+description: CoreML Real-time Object Detection
 version: 1.0.0+1
 publish_to: 'none'
 
@@ -9,12 +9,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  cupertino_icons: ^1.0.2
+  camera: ^0.11.0+1
+  path_provider: ^2.1.2
+  file_picker: ^8.0.0
+  permission_handler: ^11.3.0
+  cupertino_icons: ^1.0.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^2.0.0
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
