@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
 
 void main() async {
@@ -23,46 +22,39 @@ class _DetectorScreenState extends State<DetectorScreen> {
   CameraController? _controller;
   List<dynamic> _recognitions = [];
   bool _isDetecting = false;
+  String _status = "Ready";
   String _inferenceTime = "0";
   String? _modelPath;
   List<Map<String, dynamic>> _history = [];
-  bool _isFirestoreEnabled = false; // Stub for toggle
-
-  @override
-  void initState() {
-    super.initState();
-    _requestPermissions();
-  }
-
-  Future<void> _requestPermissions() async {
-    await [Permission.camera, Permission.storage].request();
-  }
 
   Future<void> _pickModel() async {
+    setState(() => _status = "Picking model...");
     FilePickerResult? result = await FilePicker.platform.pickFiles();
     if (result != null) {
+      setState(() => _status = "Compiling & Loading CoreML...");
       final path = result.files.single.path;
       final bool success = await platform.invokeMethod('loadModel', {"path": path});
-      if (success) {
-        setState(() => _modelPath = path);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Model Loaded Successfully")));
-      }
+      setState(() {
+        _modelPath = success ? path : null;
+        _status = success ? "Model Loaded" : "Load Failed";
+      });
+    } else {
+      setState(() => _status = "Ready");
     }
   }
 
   void _toggleCamera() async {
     if (_controller != null) {
+      setState(() => _status = "Stopping...");
       await _controller!.dispose();
-      setState(() {
-        _controller = null;
-        _recognitions = [];
-      });
+      setState(() { _controller = null; _status = "Ready"; _recognitions = []; });
       return;
     }
 
+    setState(() => _status = "Starting Camera...");
     final cameras = await availableCameras();
-    // Using bgra8888 for easier processing in Swift
-    _controller = CameraController(cameras[0], ResolutionPreset.medium, imageFormatGroup: ImageFormatGroup.bgra8888, enableAudio: false);
+    _controller = CameraController(cameras[0], ResolutionPreset.low, // Lower res = Faster FPS
+        imageFormatGroup: ImageFormatGroup.bgra8888, enableAudio: false);
     
     await _controller!.initialize();
     _controller!.startImageStream((image) async {
@@ -77,67 +69,58 @@ class _DetectorScreenState extends State<DetectorScreen> {
           "height": image.height,
         });
         
-        stopwatch.stop();
         setState(() {
           _recognitions = results;
           _inferenceTime = "${stopwatch.elapsedMilliseconds}ms";
-          for (var res in results) {
-            _history.add({
-              'label': res['label'],
-              'confidence': res['confidence'],
-              'timestamp': DateTime.now().toIso8601String()
-            });
-          }
         });
       } finally {
         _isDetecting = false;
       }
     });
-    setState(() {});
+    setState(() => _status = "Detecting...");
   }
 
   Future<void> _saveData() async {
-    if (_history.isEmpty) return;
+    setState(() => _status = "Saving JSON...");
     final directory = await getApplicationDocumentsDirectory();
     final file = File('${directory.path}/detections.json');
-    String content = jsonEncode(_history);
-    await file.writeAsString(content);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Saved to: ${file.path}")));
+    await file.writeAsString(jsonEncode(_history));
+    setState(() => _status = "Saved to Files app");
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("CoreML Detector"), actions: [
-        Switch(value: _isFirestoreEnabled, onChanged: (v) => setState(() => _isFirestoreEnabled = v))
-      ]),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: Stack(
+          if (_controller != null && _controller!.value.isInitialized)
+            SizedBox.expand(child: CameraPreview(_controller!)),
+          CustomPaint(painter: DetectionPainter(_recognitions), child: Container()),
+          SafeArea(
+            child: Column(
               children: [
-                if (_controller != null && _controller!.value.isInitialized)
-                  CameraPreview(_controller!),
-                CustomPaint(painter: DetectionPainter(_recognitions), child: Container()),
-                Positioned(
-                  top: 10, left: 10,
-                  child: Text("Inference: $_inferenceTime", style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold)),
+                Container(
+                  color: Colors.black54,
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8),
+                  child: Text("Status: $_status | Inference: $_inferenceTime",
+                      style: const TextStyle(color: Colors.white)),
                 ),
+                const Spacer(),
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Wrap(
+                    spacing: 8,
+                    children: [
+                      ElevatedButton(onPressed: _pickModel, child: const Text("Load Model")),
+                      ElevatedButton(onPressed: _toggleCamera, child: Text(_controller == null ? "Start" : "Stop")),
+                      ElevatedButton(onPressed: _saveData, child: const Text("Save")),
+                    ],
+                  ),
+                )
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Wrap(
-              spacing: 8,
-              children: [
-                ElevatedButton(onPressed: _pickModel, child: const Text("Load Model")),
-                ElevatedButton(onPressed: _toggleCamera, child: Text(_controller == null ? "Start Camera" : "Stop Camera")),
-                ElevatedButton(onPressed: _saveData, child: const Text("Save Detections")),
-                ElevatedButton(onPressed: () => setState(() => _history.clear()), child: const Text("Clear Data")),
-              ],
-            ),
-          )
         ],
       ),
     );
@@ -150,10 +133,10 @@ class DetectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = 2.0..color = Colors.red;
-    final textPainter = TextPainter(textDirection: TextDirection.ltr);
-
+    final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = 3.0..color = Colors.greenAccent;
     for (var res in results) {
+      // Vision (0,0) is bottom-left, Flutter is top-left.
+      // Scaling normalized coordinates to screen size.
       final rect = Rect.fromLTWH(
         res['x'] * size.width,
         res['y'] * size.height,
@@ -161,16 +144,8 @@ class DetectionPainter extends CustomPainter {
         res['h'] * size.height,
       );
       canvas.drawRect(rect, paint);
-      
-      textPainter.text = TextSpan(
-        text: "${res['label']} ${(res['confidence'] * 100).toStringAsFixed(0)}%",
-        style: const TextStyle(color: Colors.red, backgroundColor: Colors.black54),
-      );
-      textPainter.layout();
-      textPainter.paint(canvas, Offset(rect.left, rect.top - 20));
     }
   }
-
   @override
-  bool shouldRepaint(CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
