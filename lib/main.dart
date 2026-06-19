@@ -1,64 +1,128 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 
-void main() => runApp(const MaterialApp(home: NativeDetectorScreen()));
-
-class NativeDetectorScreen extends StatefulWidget {
-  const NativeDetectorScreen({super.key});
-  @override
-  State<NativeDetectorScreen> createState() => _NativeDetectorScreenState();
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: 'https://hvygdmtjtwskklmyxgwv.supabase.co',
+    anonKey: 'sb_publishable_OahMLpySUkDoVhYGQGKLsQ_H6LGcnx5',
+  );
+  runApp(const MaterialApp(home: SplashScreen()));
 }
 
-class _NativeDetectorScreenState extends State<NativeDetectorScreen> {
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _initApp();
+  }
+
+  Future<void> _initApp() async {
+    await Future.delayed(const Duration(seconds: 3));
+    await Geolocator.requestPermission();
+    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DetectorScreen()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.security, size: 100, color: Colors.blueAccent),
+            SizedBox(height: 20),
+            CircularProgressIndicator(color: Colors.blueAccent),
+            SizedBox(height: 10),
+            Text("SYSTEM LOADING...", style: TextStyle(color: Colors.white, letterSpacing: 2))
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class DetectorScreen extends StatefulWidget {
+  const DetectorScreen({super.key});
+  @override
+  State<DetectorScreen> createState() => _DetectorScreenState();
+}
+
+class _DetectorScreenState extends State<DetectorScreen> {
   static const platform = MethodChannel('com.example.test2/detector');
+  final supabase = Supabase.instance.client;
   String _status = "Ready";
-  String _inferenceTime = "0ms";
-  bool _isCameraRunning = false;
+  String _infTime = "0ms";
+  bool _isCam = false;
+  bool _autoSync = false;
   final List<Map<String, dynamic>> _history = [];
 
   @override
   void initState() {
     super.initState();
-    // Listen for data from Swift
     platform.setMethodCallHandler((call) async {
       if (call.method == "updateResults") {
-        setState(() {
-          _inferenceTime = "${call.arguments['time']}ms";
-          final List results = call.arguments['results'];
-          for (var res in results) {
-            _history.add({'label': res, 'time': DateTime.now().toIso8601String()});
-          }
-        });
+        setState(() => _infTime = "${call.arguments['time']}ms");
+        if (_autoSync) {
+          final List res = call.arguments['results'];
+          if (res.isNotEmpty) _syncToSupabase(res.first.toString());
+        }
       }
     });
   }
 
-  Future<void> _pickModel() async {
-    setState(() => _status = "Picking model...");
-    FilePickerResult? result = await FilePicker.platform.pickFiles();
-    if (result != null) {
-      final success = await platform.invokeMethod('loadModel', {"path": result.files.single.path});
-      setState(() => _status = success ? "Model Loaded" : "Load Failed");
-    }
+  Future<void> _syncToSupabase(String label) async {
+    try {
+      Position p = await Geolocator.getCurrentPosition();
+      List<Placemark> pm = await placemarkFromCoordinates(p.latitude, p.longitude);
+      String addr = "${pm.first.street}, ${pm.first.locality}";
+      
+      final data = {
+        'anomaly': label,
+        'confidence': 0.95,
+        'lat': p.latitude,
+        'lng': p.longitude,
+        'address': addr,
+        'timestamp': DateTime.now().toIso8601String(),
+      };
+      
+      _history.add(data);
+      await supabase.from('detections').insert(data);
+    } catch (e) { print(e); }
   }
 
-  void _toggleCamera() {
-    setState(() {
-      _isCameraRunning = !_isCameraRunning;
-      _status = _isCameraRunning ? "Detecting..." : "Camera Stopped";
-    });
-  }
-
-  Future<void> _saveData() async {
-    setState(() => _status = "Saving...");
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/detections.json');
-    await file.writeAsString(jsonEncode(_history));
-    setState(() => _status = "Saved: ${_history.length} items");
+  Future<void> _generatePdf() async {
+    final pdf = pw.Document();
+    pdf.addPage(pw.MultiPage(build: (pw.Context context) => [
+      pw.Header(level: 0, text: "Anomaly Detection Report"),
+      pw.TableHelper.fromTextArray(
+        data: <List<String>>[
+          ['Anomaly', 'Address', 'Lat', 'Lng', 'Time'],
+          ..._history.map((e) => [e['anomaly'], e['address'], e['lat'].toString(), e['lng'].toString(), e['timestamp']])
+        ],
+      ),
+    ]));
+    
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/report.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Detection PDF Report');
   }
 
   @override
@@ -67,44 +131,35 @@ class _NativeDetectorScreenState extends State<NativeDetectorScreen> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // The Native Camera View
-          if (_isCameraRunning)
-            const SizedBox.expand(
-              child: UiKitView(
-                viewType: 'native-cam-view',
-                creationParams: {},
-                creationParamsCodec: StandardMessageCodec(),
-              ),
-            ),
-          
-          // UI Overlay
+          if (_isCam) const SizedBox.expand(child: UiKitView(viewType: 'native-cam-view', creationParams: {}, creationParamsCodec: StandardMessageCodec())),
           SafeArea(
             child: Column(
               children: [
                 Container(
-                  color: Colors.black54,
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    "Status: $_status | Inference: $_inferenceTime",
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  color: Colors.black54, padding: const EdgeInsets.all(12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Status: $_status | $_infTime", style: const TextStyle(color: Colors.white)),
+                      Row(children: [
+                        const Text("AUTO-DB", style: TextStyle(color: Colors.white, fontSize: 10)),
+                        Switch(value: _autoSync, onChanged: (v) => setState(() => _autoSync = v)),
+                      ])
+                    ],
                   ),
                 ),
                 const Spacer(),
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 30),
-                  child: Wrap(
-                    spacing: 12,
-                    children: [
-                      ElevatedButton(onPressed: _pickModel, child: const Text("Load Model")),
-                      ElevatedButton(
-                        onPressed: _toggleCamera, 
-                        style: ElevatedButton.styleFrom(backgroundColor: _isCameraRunning ? Colors.red : Colors.blue),
-                        child: Text(_isCameraRunning ? "Stop Camera" : "Start Camera"),
-                      ),
-                      ElevatedButton(onPressed: _saveData, child: const Text("Save JSON")),
-                    ],
-                  ),
+                  padding: const EdgeInsets.all(20),
+                  child: Wrap(spacing: 10, children: [
+                    ElevatedButton(onPressed: () async {
+                      FilePickerResult? r = await FilePicker.platform.pickFiles();
+                      if (r != null) await platform.invokeMethod('loadModel', {"path": r.files.single.path});
+                      setState(() => _status = "Model Loaded");
+                    }, child: const Text("Load Model")),
+                    ElevatedButton(onPressed: () => setState(() => _isCam = !_isCam), child: Text(_isCam ? "Stop" : "Start")),
+                    ElevatedButton(onPressed: _generatePdf, child: const Text("PDF & Share")),
+                  ]),
                 )
               ],
             ),
