@@ -18,12 +18,12 @@ class _NativeDetectorScreenState extends State<NativeDetectorScreen> {
   String _status = "Ready";
   String _inferenceTime = "0ms";
   bool _isCameraRunning = false;
-  List<Map<String, dynamic>> _history = [];
+  final List<Map<String, dynamic>> _history = [];
 
   @override
   void initState() {
     super.initState();
-    // Listen for data coming from Swift (Inference time and detections)
+    // Listen for data from Swift
     platform.setMethodCallHandler((call) async {
       if (call.method == "updateResults") {
         setState(() {
@@ -64,30 +64,44 @@ class _NativeDetectorScreenState extends State<NativeDetectorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       body: Stack(
         children: [
+          // The Native Camera View
           if (_isCameraRunning)
-            const UiKitView(
-              viewType: 'native-cam-view',
-              creationParams: {},
-              creationParamsCodec: StandardMessageCodec(),
+            const SizedBox.expand(
+              child: UiKitView(
+                viewType: 'native-cam-view',
+                creationParams: {},
+                creationParamsCodec: StandardMessageCodec(),
+              ),
             ),
+          
+          // UI Overlay
           SafeArea(
             child: Column(
               children: [
                 Container(
-                  color: Colors.black54, width: double.infinity, padding: const EdgeInsets.all(8),
-                  child: Text("Status: $_status | Inference: $_inferenceTime", 
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  color: Colors.black54,
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    "Status: $_status | Inference: $_inferenceTime",
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
                 ),
                 const Spacer(),
                 Padding(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.only(bottom: 30),
                   child: Wrap(
-                    spacing: 10,
+                    spacing: 12,
                     children: [
                       ElevatedButton(onPressed: _pickModel, child: const Text("Load Model")),
-                      ElevatedButton(onPressed: _toggleCamera, child: Text(_isCameraRunning ? "Stop" : "Start")),
+                      ElevatedButton(
+                        onPressed: _toggleCamera, 
+                        style: ElevatedButton.styleFrom(backgroundColor: _isCameraRunning ? Colors.red : Colors.blue),
+                        child: Text(_isCameraRunning ? "Stop Camera" : "Start Camera"),
+                      ),
                       ElevatedButton(onPressed: _saveData, child: const Text("Save JSON")),
                     ],
                   ),
