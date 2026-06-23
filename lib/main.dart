@@ -36,9 +36,15 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _startLoading() async {
-    try { await _player.play(AssetSource('loading.mp3')); } catch (e) { print(e); }
+    try { await _player.play(AssetSource('loading.mp3')); } catch (e) {}
+    
+    // Request Location Permission
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      await Geolocator.requestPermission();
+    }
+    
     await Future.delayed(const Duration(seconds: 4));
-    await Geolocator.requestPermission();
     if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DetectorScreen()));
   }
 
@@ -54,7 +60,7 @@ class _SplashScreenState extends State<SplashScreen> {
         SizedBox(height: 25),
         CircularProgressIndicator(color: Colors.blueAccent),
         SizedBox(height: 15),
-        Text("SECURE SYSTEM INITIALIZING...", style: TextStyle(color: Colors.white, letterSpacing: 1.5, fontSize: 12)),
+        Text("SYSTEM INITIALIZING...", style: TextStyle(color: Colors.white, letterSpacing: 1.5, fontSize: 12)),
       ])),
     );
   }
@@ -69,11 +75,12 @@ class DetectorScreen extends StatefulWidget {
 class _DetectorScreenState extends State<DetectorScreen> {
   static const platform = MethodChannel('com.example.test2/detector');
   final supabase = Supabase.instance.client;
-  String _status = "Ready";
   String _infTime = "0ms";
   String _lastSyncMsg = "";
   bool _isCam = false;
   bool _autoSync = false;
+  bool _isSyncing = false;
+  DateTime? _lastSyncTime;
   final List<Map<String, dynamic>> _history = [];
 
   @override
@@ -81,35 +88,43 @@ class _DetectorScreenState extends State<DetectorScreen> {
     super.initState();
     platform.setMethodCallHandler((call) async {
       if (call.method == "updateResults") {
+        if (!mounted) return;
         setState(() => _infTime = "${call.arguments['time']}ms");
-        if (_autoSync) {
+        
+        if (_autoSync && !_isSyncing) {
           final List res = call.arguments['results'];
-          if (res.isNotEmpty) _syncToSupabase(res.first.toString());
+          if (res.isNotEmpty) {
+            // Throttle: Sync only once every 4 seconds
+            if (_lastSyncTime == null || DateTime.now().difference(_lastSyncTime!).inSeconds > 4) {
+              _syncToSupabase(res.first.toString());
+            }
+          }
         }
       }
     });
   }
 
   Future<void> _syncToSupabase(String label) async {
+    _isSyncing = true;
     try {
-      Position p = await Geolocator.getCurrentPosition();
+      Position p = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       List<Placemark> pm = await placemarkFromCoordinates(p.latitude, p.longitude);
       Placemark place = pm.first;
       final now = DateTime.now().toIso8601String();
       
       final data = {
         'anomaly': label,
-        'category': 'Real-time Detection',
+        'category': 'Detection',
         'severity': 'Medium',
         'status': 'detected',
-        'confidence': 0.98,
-        'lat': p.latitude, // GPS Coordinate
-        'lng': p.longitude, // GPS Coordinate
-        'address': "${place.street}, ${place.locality}, ${place.country}",
-        'municipality_id': place.postalCode ?? "N/A",
-        'municipality_name': place.locality ?? "N/A",
-        'district': place.subLocality ?? "N/A",
-        'governorate': place.administrativeArea ?? "N/A",
+        'confidence': 0.95,
+        'lat': p.latitude,
+        'lng': p.longitude,
+        'address': "${place.street}, ${place.locality}",
+        'municipality_id': place.postalCode ?? "0000",
+        'municipality_name': place.locality ?? "Unknown",
+        'district': place.subLocality ?? "Unknown",
+        'governorate': place.administrativeArea ?? "Unknown",
         'reports_count': 1,
         'first_seen_at': now,
         'last_seen_at': now,
@@ -121,31 +136,40 @@ class _DetectorScreenState extends State<DetectorScreen> {
       
       setState(() {
         _history.add(data);
-        _lastSyncMsg = "SUCCESS: Logged to Database";
+        _lastSyncTime = DateTime.now();
+        _lastSyncMsg = "SYNC SUCCESS: $label";
       });
-      
-      // Clear message after 2 seconds
+
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) setState(() => _lastSyncMsg = "");
       });
     } catch (e) {
       print("Sync Error: $e");
+    } finally {
+      _isSyncing = false;
     }
   }
 
   Future<void> _generatePdf() async {
+    if (_history.isEmpty) return;
     final pdf = pw.Document();
     pdf.addPage(pw.MultiPage(build: (pw.Context context) => [
-      pw.Header(level: 0, text: "ANOMALY DETECTION REPORT"),
-      pw.TableHelper.fromTextArray(data: <List<String>>[
-        ['Anomaly', 'District', 'Governorate', 'Lat/Lng', 'Time'],
-        ..._history.map((e) => [e['anomaly'], e['district'] ?? '', e['governorate'] ?? '', "${e['lat']},${e['lng']}", e['timestamp'].toString().substring(0, 16)])
-      ]),
+      pw.Header(level: 0, text: "DETECTION LOG REPORT"),
+      pw.TableHelper.fromTextArray(
+        headers: ['Anomaly', 'District', 'Gov', 'Time'],
+        data: _history.map((e) => [
+          e['anomaly'].toString(),
+          e['district'].toString(),
+          e['governorate'].toString(),
+          e['timestamp'].toString().substring(11, 19)
+        ]).toList(),
+      ),
     ]));
+
     final dir = await getTemporaryDirectory();
     final file = File("${dir.path}/report.pdf");
     await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Exported Detection Data');
+    await Share.shareXFiles([XFile(file.path)], text: 'Report');
   }
 
   @override
@@ -154,36 +178,37 @@ class _DetectorScreenState extends State<DetectorScreen> {
       backgroundColor: Colors.black,
       body: Stack(children: [
         if (_isCam) const SizedBox.expand(child: UiKitView(viewType: 'native-cam-view', creationParams: {}, creationParamsCodec: StandardMessageCodec())),
+        
+        // CENTER NOTIFICATION
+        if (_lastSyncMsg.isNotEmpty)
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.8), borderRadius: BorderRadius.circular(10)),
+              child: Text(_lastSyncMsg, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+          ),
+
         SafeArea(child: Column(children: [
           Container(
-            color: Colors.black87, padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-            child: Column(children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text("STATUS: $_status | $_infTime", style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 12)),
-                Row(children: [
-                  const Text("AUTO-DB", style: TextStyle(color: Colors.white, fontSize: 10)),
-                  Switch(value: _autoSync, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _autoSync = v)),
-                ])
-              ]),
-              if (_lastSyncMsg.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 5),
-                  child: Text(_lastSyncMsg, style: const TextStyle(color: Colors.blueAccent, fontSize: 11, fontWeight: FontWeight.bold)),
-                ),
+            color: Colors.black87, padding: const EdgeInsets.all(12),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text("INF: $_infTime", style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
+              Row(children: [
+                const Text("AUTO-DB", style: TextStyle(color: Colors.white, fontSize: 10)),
+                Switch(value: _autoSync, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _autoSync = v)),
+              ])
             ]),
           ),
           const Spacer(),
-          Container(
-            padding: const EdgeInsets.all(25), color: Colors.black54,
-            child: Wrap(spacing: 15, alignment: WrapAlignment.center, children: [
-              ElevatedButton.icon(icon: const Icon(Icons.file_upload), onPressed: () async {
-                FilePickerResult? r = await FilePicker.platform.pickFiles();
-                if (r != null) { await platform.invokeMethod('loadModel', {"path": r.files.single.path}); setState(() => _status = "Model Online"); }
-              }, label: const Text("Load Model")),
-              ElevatedButton.icon(icon: Icon(_isCam ? Icons.stop : Icons.videocam), style: ElevatedButton.styleFrom(backgroundColor: _isCam ? Colors.red : Colors.blueAccent), onPressed: () => setState(() => _isCam = !_isCam), label: Text(_isCam ? "Stop" : "Start")),
-              ElevatedButton.icon(icon: const Icon(Icons.share), onPressed: _generatePdf, label: const Text("Share PDF")),
-            ]),
-          )
+          Padding(padding: const EdgeInsets.all(20), child: Wrap(spacing: 10, children: [
+            ElevatedButton(onPressed: () async {
+              FilePickerResult? r = await FilePicker.platform.pickFiles();
+              if (r != null) await platform.invokeMethod('loadModel', {"path": r.files.single.path});
+            }, child: const Text("Load Model")),
+            ElevatedButton(onPressed: () => setState(() => _isCam = !_isCam), child: Text(_isCam ? "Stop" : "Start")),
+            ElevatedButton(onPressed: _generatePdf, child: const Text("Share PDF")),
+          ]))
         ])),
       ]),
     );
