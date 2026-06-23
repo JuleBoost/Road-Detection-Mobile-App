@@ -15,7 +15,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(
     url: 'https://hvygdmtjtwskklmyxgwv.supabase.co',
-    anonKey: 'sb_publishable_j7o1byQWTqvAuvmJTlFe7w_5NmzKbc_',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh2eWdkbXRqdHdza2tsbXl4Z3d2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4ODc2ODEsImV4cCI6MjA5NzQ2MzY4MX0.x5us6LE2YxJO8FTlOSdd7BBFQiSW64pjDvkq_IZ1y1c',
   );
   runApp(const MaterialApp(home: SplashScreen()));
 }
