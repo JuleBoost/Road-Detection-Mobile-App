@@ -138,7 +138,7 @@ class _DetectorScreenState extends State<DetectorScreen> {
         'anomaly': label,
         'category': 'AI Detection',
         'severity': 'Medium',
-        'status': 'detected',
+        'status': 'New',
         'confidence': 0.95,
         'lat': p.latitude,
         'lng': p.longitude,
